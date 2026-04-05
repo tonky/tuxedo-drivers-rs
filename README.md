@@ -109,6 +109,47 @@ temp = 90
 speed = 100
 ```
 
+## Interfaces
+
+### D-Bus (exposes)
+
+Bus name `com.tuxedo.Daemon` on the system bus, object path `/com/tuxedo/Daemon`:
+
+| Interface | Methods / Properties |
+|-----------|---------------------|
+| `com.tuxedo.Daemon.Fan` | `SetFanSpeed`, `SetAutoMode`, `GetFanSpeed`, `GetTemperature`, `GetFanInfo`, `FanCount` |
+| `com.tuxedo.Daemon.Keyboard` | `SetBrightness`, `SetColor`, `SetMode`, `GetKeyboardInfo` |
+| `com.tuxedo.Daemon.Profile` | `SetProfile`, `CurrentProfile`, `AvailableProfiles` |
+| `com.tuxedo.Daemon.Device` | `DeviceName`, `Platform`, `DaemonVersion` |
+
+### Sysfs (reads/writes)
+
+Platform detection (read-only):
+
+| Path | Purpose |
+|------|---------|
+| `/sys/class/dmi/id/{sys_vendor,board_vendor,board_name,product_sku,chassis_vendor}` | DMI fields for platform detection |
+| `/sys/bus/wmi/devices/{GUID}-N` | WMI GUID presence (NB04, Uniwill) |
+| `/sys/bus/acpi/devices/CLV0001:00` | Clevo ACPI device presence |
+
+Kernel shim sysfs (read/write — one active per platform):
+
+| Path | Platform | Attributes |
+|------|----------|------------|
+| `/sys/devices/platform/tuxedo-ec/ec_ram` | NB05 | Binary EC register access (pread/pwrite) |
+| `/sys/devices/platform/tuxedo-uw-fan/` | Uniwill | `cpu_temp`, `gpu_temp`, `fan0_pwm`, `fan1_pwm`, `fan_mode`, `fan_count` |
+| `/sys/devices/platform/tuxedo-tuxi/` | Tuxi | `fan0_temp`, `fan1_temp`, `fan0_rpm`, `fan1_rpm`, `fan0_pwm`, `fan1_pwm`, `fan_mode`, `fan_count` |
+| `/sys/devices/platform/tuxedo-clevo/` | Clevo | `fan0_info`, `fan1_info`, `fan2_info`, `fan_speed`, `fan_auto` |
+| `/sys/devices/platform/tuxedo-nb04/` | NB04 | `cpu_temp`, `gpu_temp`, `fan0_rpm`, `fan1_rpm`, `power_profile` |
+
+### Other files
+
+| Path | Mode | Purpose |
+|------|------|---------|
+| `/etc/tuxedo-daemon/config.toml` | Read | Fan curves, keyboard settings, default profile |
+| `/dev/hidraw*` | Read/Write | ITE keyboard LED control (USB HID feature reports) |
+| `/sys/class/hidraw/*/device/` | Read | HID device enumeration (vendor/product ID matching) |
+
 ## Project Status
 
 Proof-of-concept, not yet tested on hardware. See [HARDWARE.md](HARDWARE.md) for testing details and [RISKS.md](RISKS.md) for known risks.
