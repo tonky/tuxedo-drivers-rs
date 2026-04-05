@@ -1,0 +1,13 @@
+[Unit]
+Description=TUXEDO Hardware Daemon
+After=dbus.service
+
+[Service]
+Type=dbus
+BusName=com.tuxedo.Daemon
+ExecStart=/usr/bin/tuxedo-daemon
+Restart=on-failure
+WatchdogSec=30
+
+[Install]
+WantedBy=multi-user.target
