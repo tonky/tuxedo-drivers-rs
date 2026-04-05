@@ -43,7 +43,7 @@ ls /sys/devices/platform/tuxedo-ec/ec_ram 2>/dev/null && echo "NB05 EC present"
 | Pulse 14 Gen3 | NB05 | PULSE1403 | NB05 | 2 fans, ranges variant |
 | Pulse 14 Gen4 | NB05 | PULSE1404 | NB05 | 2 fans, ranges variant |
 | InfinityFlex 14 Gen1 | NB05 | IFLX14I01 | NB05 | 1 fan, onereg variant |
-| InfinityBook 18 Gen8 | ? | ? | ? | Needs identification |
+| InfinityBook 16 Gen8 | Uniwill | IBP16I08MK2? | ? | Board name likely PH4PRX1_PH6PRX1. Verify on device. |
 
 ## Kernel Shim Testing
 
