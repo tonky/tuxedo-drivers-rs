@@ -16,6 +16,7 @@ use tracing::{info, warn};
 pub struct Nb05Platform {
     pub fan_ctl: FanController,
     pub kbd_bl: KbdBacklight,
+    #[allow(dead_code)]
     pub product_sku: String,
 }
 
@@ -75,6 +76,17 @@ impl FanBackend for Nb05Platform {
 
     fn set_auto(&self, fan_index: u8) -> io::Result<()> {
         self.fan_ctl.set_fan_auto(fan_index)
+    }
+
+    fn read_fan_rpm(&self, fan_index: u8) -> io::Result<u16> {
+        match fan_index {
+            0 => sensors::read_fan1_rpm(self.fan_ctl.ec()),
+            1 => sensors::read_fan2_rpm(self.fan_ctl.ec()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid fan index {fan_index}"),
+            )),
+        }
     }
 
     fn num_fans(&self) -> u8 {

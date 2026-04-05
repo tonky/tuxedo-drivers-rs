@@ -29,13 +29,13 @@ pub fn read_fan2_rpm(ec: &EcRam) -> io::Result<u16> {
     Ok((high << 8) | low)
 }
 
-/// Per-model fan RPM limits.
+#[allow(dead_code)]
 pub struct FanLimits {
     pub min_rpm: u16,
     pub max_rpm: u16,
 }
 
-/// Get fan RPM limits for the given product SKU.
+#[allow(dead_code)]
 pub fn fan_limits(product_sku: &str) -> FanLimits {
     match product_sku {
         "IFLX14I01" => FanLimits {

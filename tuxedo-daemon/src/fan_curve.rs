@@ -20,9 +20,12 @@ pub trait FanBackend: Send + Sync {
     /// Write fan PWM value (0–255) for a given fan index (0-based).
     fn write_pwm(&self, fan_index: u8, pwm: u8) -> io::Result<()>;
     /// Read current fan PWM value (0–255) for a given fan index (0-based).
+    #[allow(dead_code)]
     fn read_pwm(&self, fan_index: u8) -> io::Result<u8>;
     /// Set fan to hardware-auto mode for a given fan index (0-based).
     fn set_auto(&self, fan_index: u8) -> io::Result<()>;
+    /// Read fan RPM for a given fan index (0-based).
+    fn read_fan_rpm(&self, fan_index: u8) -> io::Result<u16>;
     /// Number of fans this backend controls.
     fn num_fans(&self) -> u8;
 }

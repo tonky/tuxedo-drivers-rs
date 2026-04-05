@@ -1,119 +1,96 @@
-# Phase 4: Full Integration & Cleanup
+# Phase 4: Remaining Platforms + Integration
 
-**Goal**: Polish, package, test, and ship the complete hybrid system.
+**Goal**: Add Clevo and NB04 platform support, then polish for PoC completion.
 
-**Depends on**: Phases 0-3.
+**Status**: DONE (4a Clevo, 4b NB04, 4c Integration all complete)
 
-## Tasks
+## 4a: Clevo Platform — Fan Control via WMI/ACPI DSM
 
-### 4.1 — End-to-end testing on each platform
+**New kernel shim** (`tuxedo-clevo-kmod/tuxedo_clevo.c`, ~280 LOC):
 
-Test matrix:
+Dual-transport driver:
+1. Try ACPI DSM first: HID `CLV0001`, UUID `93f224e4-fbdc-4bbf-add6-db71bdc0afad`
+2. Fall back to WMI: GUID `ABBC0F6D-8EA1-11D1-00A0-C90629100000`
+3. Validate on probe: cmd 0x52 (GET_BIOS_FEATURES_1) must return non-0xffffffff
 
-| Platform   | Example Device          | Fan | LED | Profile | Sensors | EC |
-|-----------|-------------------------|-----|-----|---------|---------|-----|
-| NB05      | Pulse 14 Gen3/Gen4      | EC  | EC  | EC      | EC      | Yes |
-| NB05      | InfinityFlex 14 Gen1    | EC  | EC  | EC      | EC      | Yes |
-| NB04      | (various)               | WMI | WMI | WMI     | WMI     | No  |
-| Uniwill   | (various)               | WMI | WMI | WMI     | WMI     | No  |
-| Clevo     | (various)               | WMI | WMI | WMI     | WMI     | No  |
-| ITE HID   | (Pulse/Polaris w/ USB)  | —   | HID | —       | —       | No  |
-| Tuxi      | (TUXEDO Tuxi models)    | ACPI| —   | —       | —       | No  |
+Internal: `clevo_cmd(cmd, arg) -> u32` dispatching to chosen transport.
 
-### 4.2 — Packaging
+**sysfs** at `/sys/devices/platform/tuxedo-clevo/`:
+- `fan0_info` (R) — cmd 0x63, returns raw u32 (FANINFO1)
+- `fan1_info` (R) — cmd 0x64, returns raw u32 (FANINFO2)
+- `fan2_info` (R) — cmd 0x6e, returns raw u32 (FANINFO3)
+- `fan_speed` (W) — cmd 0x68, takes packed u32 (3 fans × 1 byte each)
+- `fan_auto` (W) — cmd 0x69
 
-**Daemon (Rust binary)**:
-```
-- Debian: tuxedo-daemon (deb)
-- RPM: tuxedo-daemon (rpm)
-- Arch: tuxedo-daemon (AUR)
-```
+On module unload: cmd 0x69 (auto). DMI match: TUXEDO vendor.
 
-**Kernel module (tuxedo-ec only, for NB05 devices)**:
-```
-- DKMS package: tuxedo-ec-dkms
-- Only needed for NB05 devices (Pulse, InfinityFlex)
-```
+**Rust adapter** (`tuxedo-daemon/src/clevo/mod.rs`, ~200 LOC):
 
-**Transition package**:
-```
-- tuxedo-drivers → depends on tuxedo-daemon + tuxedo-ec-dkms
-- Conflicts: old tuxedo-drivers-dkms
-- Provides migration script to convert old config
-```
+Parses FANINFO u32 in Rust:
+- bits [7:0] = fan duty (0-255)
+- bits [15:8] = temperature (degrees C)
+- bits [31:16] = RPM (raw value, may need ×100 — verify on hardware)
 
-### 4.3 — Config migration
+Implements `FanBackend`:
+- `read_temp()` — parse temp field from `fan0_info`
+- `write_pwm()` — pack speeds into u32, write to `fan_speed`
+- `read_pwm()` — parse duty field from `fanN_info`
+- `read_fan_rpm()` — parse RPM field from `fanN_info`
+- `set_auto()` — write `1` to `fan_auto`
+- `num_fans()` — probe at init: try fan0/fan1/fan2_info, count valid returns
 
-Write a migration tool:
-```
-tuxedo-daemon migrate --from-tuxedo-io
-```
+Wire into `main.rs`: add to backend chain NB05 → Uniwill → Tuxi → Clevo → None.
 
-Reads current state from `/dev/tuxedo_io` (if old driver loaded) and writes
-equivalent `config.toml` for the new daemon.
+**Reference code**: `vendor/tuxedo-drivers/src/clevo_interfaces.h`,
+`vendor/tuxedo-drivers/src/clevo_acpi.c`, `vendor/tuxedo-drivers/src/clevo_wmi.c`
 
-### 4.4 — TUXEDO Control Center compatibility
+**Quirk**: Clevo requires 100ms delay after every WMI write (`msleep(100)`,
+"no known ready flag"). The kernel shim must enforce this.
 
-TUXEDO Control Center (GUI) currently talks to `/dev/tuxedo_io` via ioctl.
-It needs to be updated to use D-Bus instead. Provide:
+**Scope**: ~280 LOC C, ~200 LOC Rust.
 
-- D-Bus introspection XML for the GUI team
-- A reference Python/TypeScript client library
-- Documentation of the ioctl → D-Bus mapping
+## 4b: NB04 Sensors + Profiles (Stretch)
 
-### 4.5 — CLI tool
+NB04 has NO direct fan PWM control — fans are governed by profile selection
+(BATTERY/HUMAN/BEAST). Cannot fully implement `FanBackend`.
 
-Optional: `tuxedo-ctl` CLI for quick access:
+**New kernel shim** (`tuxedo-nb04-kmod/tuxedo_nb04.c`, ~220 LOC):
 
-```bash
-tuxedo-ctl fan status          # Show fan speeds and temps
-tuxedo-ctl fan set 0 80        # Set fan 0 to 80% (manual)
-tuxedo-ctl fan auto            # Return to auto mode
-tuxedo-ctl kbd brightness 50   # Set keyboard brightness
-tuxedo-ctl kbd color ff0000    # Set keyboard color (red)
-tuxedo-ctl profile performance # Set performance profile
-tuxedo-ctl info                # Show device info
-```
+WMI driver binding to GUID `1F174999-3A4E-4311-900D-7BE7166D5055`:
+- `cpu_temp` (R) — WMI method 0x04, returns out[2]
+- `gpu_temp` (R) — WMI method 0x06, returns out[2]
+- `fan0_rpm` (R) — WMI method 0x02, returns (out[3]<<8)|out[2]
+- `fan1_rpm` (R) — WMI method 0x02, returns (out[5]<<8)|out[4]
+- `power_profile` (RW) — WMI method 0x07, values 0/1/2
 
-Implemented as a thin D-Bus client.
+Status byte validation: (out[1]<<8)|out[0] must == 0.
 
-### 4.6 — Monitoring and safety
+**Rust adapter** (`tuxedo-daemon/src/nb04/mod.rs`, ~120 LOC):
+- Sensor reads + profile switching only (no fan PWM)
+- Wire into D-Bus `ProfileInterface` for `set_profile()`
+- Expose temp/RPM via D-Bus read methods
 
-- Watchdog: if daemon crashes, fan control returns to EC auto mode
-  (the kernel/EC firmware handles this natively — manual mode is sticky
-  but EC has thermal protection)
-- Systemd watchdog integration (`sd_notify`, `WatchdogSec=`)
-- Graceful shutdown: restore auto fan mode on daemon stop
+**Scope**: ~220 LOC C, ~120 LOC Rust. Lower PoC value since no fan control.
 
-### 4.7 — Documentation
+## 4c: Integration & Polish — DONE
 
-- README with architecture overview
-- Per-platform hardware notes
-- D-Bus API reference (generated from introspection XML)
-- Contributing guide
-- EC register map document (from phase 2)
+- Deleted `hwmon.rs` (unused generic sysfs client, superseded by per-platform adapters)
+- Removed `KeyboardType` enum from `dmi.rs` (populated but never read)
+- Removed dead items: `ClevoPlatform::read_attr()`, `PowerProfile::from_u8()`
+- Narrowed `#[allow(dead_code)]`: removed blanket module annotations on `nb05`/`uniwill`,
+  replaced with targeted annotations on specific unused-from-production items
+- `mod hid` retains blanket annotation (many internal items unused from outside)
+- D-Bus `ProfileInterface` wired to NB04 backend (was stub)
+- All 5 platforms detected and initialized in `main.rs` with graceful fallback
+- Fan backend chain: NB05 → Uniwill → Tuxi → Clevo → None
+- Shutdown paths restore auto fan mode for all platforms with fan control
+- `cargo build` — 0 warnings
+- `cargo test` — 56 tests passing
 
-### 4.8 — Upstream tuxedo-ec submission
+## Verification Per Sub-Phase
 
-Once the module is stable:
-1. Submit to `platform/x86` maintainers
-2. Follow kernel coding style, checkpatch.pl clean
-3. Add to MAINTAINERS file
-4. Target kernel 6.21+ (assuming 6.19 has uniwill-laptop)
-
-### 4.9 — Deprecation path for old tuxedo-drivers
-
-```
-v5.0:  Ship tuxedo-daemon alongside old kernel modules (both work)
-v5.1:  Default to daemon, kernel modules optional
-v6.0:  Remove old kernel modules from package
-```
-
-## Deliverable
-
-Complete, shippable replacement for tuxedo-drivers:
-- 1 Rust daemon (systemd service, D-Bus API)
-- 1 kernel module (tuxedo-ec, NB05 only, upstreamable)
-- CLI tool
-- Packages for Debian/RPM/Arch
-- Documentation
+1. `cargo build` — no warnings
+2. `cargo test` — all existing + new tests pass
+3. On target hardware: `insmod` kernel shim, verify sysfs via `cat`/`echo`
+4. Start daemon, verify D-Bus endpoints return correct data
+5. On non-matching hardware: daemon gracefully falls back to None backend

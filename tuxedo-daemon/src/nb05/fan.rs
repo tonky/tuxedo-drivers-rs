@@ -25,7 +25,7 @@ fn pwm_to_duty(pwm: u8) -> u16 {
     (pwm as u16 * FAN_SET_DUTY_MAX) / 255
 }
 
-/// Convert an EC duty value back to 0–255 PWM.
+#[allow(dead_code)]
 fn duty_to_pwm(duty: u8) -> u8 {
     ((duty as u16 * 255) / FAN_SET_DUTY_MAX) as u8
 }
@@ -83,7 +83,7 @@ impl FanController {
 
     // --- Fan 1 ---
 
-    /// Read fan 1 duty as PWM 0–255.
+    #[allow(dead_code)]
     pub fn read_fan1_pwm(&self) -> io::Result<u8> {
         let duty = if self.onereg {
             self.ec.read_byte(0x1809)?
@@ -128,7 +128,7 @@ impl FanController {
         Ok(())
     }
 
-    /// Read fan 1 manual enable state.
+    #[allow(dead_code)]
     pub fn read_fan1_enable(&self) -> io::Result<bool> {
         if self.onereg {
             Ok(self.ec.read_byte(0x02f1)? == 0xaa)
@@ -148,7 +148,7 @@ impl FanController {
 
     // --- Fan 2 (only ranges-variant, never onereg) ---
 
-    /// Read fan 2 duty as PWM 0–255.
+    #[allow(dead_code)]
     pub fn read_fan2_pwm(&self) -> io::Result<u8> {
         if self.num_fans < 2 {
             return Err(io::Error::new(io::ErrorKind::NotFound, "no fan 2"));
@@ -191,7 +191,7 @@ impl FanController {
         Ok(())
     }
 
-    /// Read fan 2 manual enable state.
+    #[allow(dead_code)]
     pub fn read_fan2_enable(&self) -> io::Result<bool> {
         if self.num_fans < 2 {
             return Err(io::Error::new(io::ErrorKind::NotFound, "no fan 2"));
@@ -233,7 +233,7 @@ impl FanController {
         }
     }
 
-    /// Read the current PWM for fan by index (0-based).
+    #[allow(dead_code)]
     pub fn get_fan_pwm(&self, index: u8) -> io::Result<u8> {
         match index {
             0 => self.read_fan1_pwm(),

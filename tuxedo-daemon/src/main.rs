@@ -1,14 +1,15 @@
-// Many types/functions are defined ahead of their usage phase.
-#![allow(dead_code)]
-
+mod clevo;
 mod config;
 mod dbus;
 mod dmi;
 mod ec;
 mod fan_curve;
+#[allow(dead_code)]
 mod hid;
-mod hwmon;
+mod nb04;
 mod nb05;
+mod tuxi;
+mod uniwill;
 
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -55,27 +56,110 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    info!("starting D-Bus service");
-    let conn = dbus::serve(device, config.clone(), nb05.clone()).await?;
-
-    // Spawn fan curve engine if we have a fan backend
-    let fan_engine_handle = {
-        let backend: Option<Arc<dyn fan_curve::FanBackend>> = if nb05.is_some() {
-            nb05.clone().map(|n| n as Arc<dyn fan_curve::FanBackend>)
-        } else {
-            match hwmon::HwmonDevice::find_by_name("uniwill") {
-                Ok(dev) => {
-                    info!(path = %dev.path().display(), "found hwmon device for fan control");
-                    Some(Arc::new(dev) as Arc<dyn fan_curve::FanBackend>)
+    // Initialize Uniwill platform if detected and fan shim is loaded
+    let uniwill = if let Some(dev) = &device {
+        if dev.platform == dmi::Platform::Uniwill && uniwill::has_fan_shim() {
+            match uniwill::UniwillPlatform::init() {
+                Ok(p) => {
+                    info!("Uniwill platform initialized");
+                    p.shutdown(); // restore auto in case of prior crash
+                    Some(Arc::new(p))
                 }
-                Err(_) => {
-                    info!("no hwmon fan backend found, fan curve engine disabled");
+                Err(e) => {
+                    warn!("failed to initialize Uniwill platform: {e}");
                     None
                 }
             }
-        };
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-        if let Some(backend) = backend {
+    // Initialize Tuxi platform if detected and kernel shim is loaded
+    let tuxi = if let Some(dev) = &device {
+        if dev.platform == dmi::Platform::Tuxi && tuxi::has_shim() {
+            match tuxi::TuxiPlatform::init() {
+                Ok(p) => {
+                    info!("Tuxi platform initialized");
+                    p.shutdown(); // restore auto in case of prior crash
+                    Some(Arc::new(p))
+                }
+                Err(e) => {
+                    warn!("failed to initialize Tuxi platform: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Initialize Clevo platform if detected and kernel shim is loaded
+    let clevo = if let Some(dev) = &device {
+        if dev.platform == dmi::Platform::Clevo && clevo::has_shim() {
+            match clevo::ClevoPlatform::init() {
+                Ok(p) => {
+                    info!("Clevo platform initialized");
+                    p.shutdown(); // restore auto in case of prior crash
+                    Some(Arc::new(p))
+                }
+                Err(e) => {
+                    warn!("failed to initialize Clevo platform: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Initialize NB04 platform if detected and kernel shim is loaded
+    // NB04 has no fan PWM control — only sensors and power profiles.
+    let nb04 = if let Some(dev) = &device {
+        if dev.platform == dmi::Platform::Nb04 && nb04::has_shim() {
+            match nb04::Nb04Platform::init() {
+                Ok(p) => {
+                    info!("NB04 platform initialized");
+                    Some(Arc::new(p))
+                }
+                Err(e) => {
+                    warn!("failed to initialize NB04 platform: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Build fan backend: NB05 → Uniwill → Tuxi → Clevo → None
+    let fan_backend: Option<Arc<dyn fan_curve::FanBackend>> = if nb05.is_some() {
+        nb05.clone().map(|n| n as Arc<dyn fan_curve::FanBackend>)
+    } else if uniwill.is_some() {
+        uniwill.clone().map(|u| u as Arc<dyn fan_curve::FanBackend>)
+    } else if tuxi.is_some() {
+        tuxi.clone().map(|t| t as Arc<dyn fan_curve::FanBackend>)
+    } else if clevo.is_some() {
+        clevo.clone().map(|c| c as Arc<dyn fan_curve::FanBackend>)
+    } else {
+        info!("no fan backend found, fan control disabled");
+        None
+    };
+
+    info!("starting D-Bus service");
+    let conn = dbus::serve(device, config.clone(), fan_backend.clone(), nb05.clone(), nb04.clone()).await?;
+
+    // Spawn fan curve engine if we have a fan backend
+    let fan_engine_handle = {
+        if let Some(backend) = fan_backend.clone() {
             let (_config_tx, config_rx) = tokio::sync::watch::channel(config.fan.clone());
             let engine = fan_curve::FanCurveEngine::new(backend, config_rx);
             Some(tokio::spawn(engine.run()))
@@ -127,6 +211,15 @@ async fn main() -> anyhow::Result<()> {
     // Restore fans to auto mode before exiting
     if let Some(ref nb05) = nb05 {
         nb05.shutdown();
+    }
+    if let Some(ref uw) = uniwill {
+        uw.shutdown();
+    }
+    if let Some(ref tx) = tuxi {
+        tx.shutdown();
+    }
+    if let Some(ref cl) = clevo {
+        cl.shutdown();
     }
 
     info!("shutting down");

@@ -1,8 +1,10 @@
 use crate::config::Config;
 use crate::dmi::TuxedoDevice;
+use crate::fan_curve::FanBackend;
 use crate::hid::color_scaling::ColorScaling;
 use crate::hid::discover;
 use crate::hid::{KeyboardLed, Rgb};
+use crate::nb04::Nb04Platform;
 use crate::nb05::Nb05Platform;
 use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
@@ -14,15 +16,19 @@ const BUS_NAME: &str = "com.tuxedo.Daemon";
 
 /// Start the D-Bus service and return the connection. Does not block.
 ///
-/// If `nb05` is provided, the FanInterface uses it for real hardware control.
+/// `fan_backend` is used for fan/temperature control (works with any platform).
+/// `nb05` is used for NB05-specific features (keyboard backlight via EC).
+/// `nb04` is used for NB04-specific features (power profiles, sensors).
 pub async fn serve(
     device: Option<TuxedoDevice>,
     config: Config,
+    fan_backend: Option<Arc<dyn FanBackend>>,
     nb05: Option<Arc<Nb05Platform>>,
+    nb04: Option<Arc<Nb04Platform>>,
 ) -> anyhow::Result<zbus::Connection> {
-    let fan = FanInterface::new(&config, nb05.clone());
+    let fan = FanInterface::new(&config, fan_backend);
     let keyboard = KeyboardInterface::new(&device, nb05.clone());
-    let profile = ProfileInterface::new(&config);
+    let profile = ProfileInterface::new(&config, nb04);
     let device_iface = DeviceInterface::new(device);
 
     let conn = Builder::system()?
@@ -44,70 +50,67 @@ pub async fn serve(
 // ---------------------------------------------------------------------------
 
 struct FanInterface {
-    nb05: Option<Arc<Nb05Platform>>,
+    backend: Option<Arc<dyn FanBackend>>,
     fan_count: u32,
 }
 
 impl FanInterface {
-    fn new(_config: &Config, nb05: Option<Arc<Nb05Platform>>) -> Self {
-        let fan_count = nb05.as_ref().map_or(0, |p| p.fan_ctl.num_fans() as u32);
-        Self { nb05, fan_count }
+    fn new(_config: &Config, backend: Option<Arc<dyn FanBackend>>) -> Self {
+        let fan_count = backend.as_ref().map_or(0, |b| b.num_fans() as u32);
+        Self { backend, fan_count }
     }
 
-    fn require_nb05(&self) -> fdo::Result<&Nb05Platform> {
-        self.nb05
+    fn require_backend(&self) -> fdo::Result<&dyn FanBackend> {
+        self.backend
             .as_deref()
-            .ok_or_else(|| fdo::Error::NotSupported("no NB05 platform".into()))
+            .ok_or_else(|| fdo::Error::NotSupported("no fan backend available".into()))
     }
 }
 
 #[zbus::interface(name = "com.tuxedo.Daemon.Fan")]
 impl FanInterface {
     async fn set_fan_speed(&self, fan_index: u32, pwm: u8) -> fdo::Result<()> {
-        let nb05 = self.require_nb05()?;
-        nb05.fan_ctl
-            .set_fan_pwm(fan_index as u8, pwm)
+        let backend = self.require_backend()?;
+        backend
+            .write_pwm(fan_index as u8, pwm)
             .map_err(|e| fdo::Error::Failed(e.to_string()))
     }
 
     async fn set_auto_mode(&self, fan_index: u32) -> fdo::Result<()> {
-        let nb05 = self.require_nb05()?;
-        nb05.fan_ctl
-            .set_fan_auto(fan_index as u8)
+        let backend = self.require_backend()?;
+        backend
+            .set_auto(fan_index as u8)
             .map_err(|e| fdo::Error::Failed(e.to_string()))
     }
 
     async fn get_fan_speed(&self, fan_index: u32) -> fdo::Result<u32> {
-        use crate::nb05::sensors;
-        let nb05 = self.require_nb05()?;
-        let rpm = match fan_index {
-            0 => sensors::read_fan1_rpm(nb05.fan_ctl.ec()),
-            1 => sensors::read_fan2_rpm(nb05.fan_ctl.ec()),
-            _ => return Err(fdo::Error::InvalidArgs("invalid fan index".into())),
-        };
-        rpm.map(|r| r as u32)
+        let backend = self.require_backend()?;
+        backend
+            .read_fan_rpm(fan_index as u8)
+            .map(|r| r as u32)
             .map_err(|e| fdo::Error::Failed(e.to_string()))
     }
 
     async fn get_temperature(&self, sensor_index: u32) -> fdo::Result<i32> {
-        use crate::nb05::sensors;
-        let nb05 = self.require_nb05()?;
+        let backend = self.require_backend()?;
         if sensor_index != 0 {
             return Err(fdo::Error::InvalidArgs("only sensor 0 (CPU) supported".into()));
         }
-        sensors::read_cpu_temp(nb05.fan_ctl.ec())
+        backend
+            .read_temp()
             .map(|t| t as i32 * 1000) // millidegrees
             .map_err(|e| fdo::Error::Failed(e.to_string()))
     }
 
     async fn get_fan_info(&self) -> fdo::Result<(u32, u32, bool, u8)> {
-        let nb05 = self.require_nb05()?;
-        let limits = crate::nb05::sensors::fan_limits(&nb05.product_sku);
+        let backend = self.require_backend()?;
+        let num_fans = backend.num_fans();
+        // Generic defaults — platform-specific limits can be refined later
         Ok((
-            limits.max_rpm as u32,
-            limits.min_rpm as u32,
-            nb05.fan_ctl.num_fans() > 1,
-            nb05.fan_ctl.num_fans(),
+            5400, // max RPM (generic estimate)
+            0,    // min RPM
+            num_fans > 1,
+            num_fans,
         ))
     }
 
@@ -252,19 +255,21 @@ impl KeyboardInterface {
 // ---------------------------------------------------------------------------
 
 struct ProfileInterface {
-    current_profile: String,
+    current_profile: Mutex<String>,
     available_profiles: Vec<String>,
+    nb04: Option<Arc<Nb04Platform>>,
 }
 
 impl ProfileInterface {
-    fn new(config: &Config) -> Self {
+    fn new(config: &Config, nb04: Option<Arc<Nb04Platform>>) -> Self {
         Self {
-            current_profile: config.profile.default.clone(),
+            current_profile: Mutex::new(config.profile.default.clone()),
             available_profiles: vec![
                 "powersave".into(),
                 "balanced".into(),
                 "performance".into(),
             ],
+            nb04,
         }
     }
 }
@@ -272,13 +277,32 @@ impl ProfileInterface {
 #[zbus::interface(name = "com.tuxedo.Daemon.Profile")]
 impl ProfileInterface {
     async fn set_profile(&self, profile: &str) -> fdo::Result<()> {
-        let _ = profile;
-        Err(fdo::Error::NotSupported("not yet implemented".into()))
+        if let Some(nb04) = &self.nb04 {
+            let pp = crate::nb04::PowerProfile::from_str(profile).ok_or_else(|| {
+                fdo::Error::InvalidArgs(format!(
+                    "unknown profile '{}', use: battery, balanced, performance",
+                    profile
+                ))
+            })?;
+            nb04.set_profile(pp)
+                .map_err(|e| fdo::Error::Failed(e.to_string()))?;
+            if let Ok(mut cached) = self.current_profile.lock() {
+                *cached = profile.to_string();
+            }
+            Ok(())
+        } else {
+            Err(fdo::Error::NotSupported(
+                "power profiles not supported on this platform".into(),
+            ))
+        }
     }
 
     #[zbus(property)]
-    async fn current_profile(&self) -> &str {
-        &self.current_profile
+    async fn current_profile(&self) -> String {
+        self.current_profile
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| "unknown".into())
     }
 
     #[zbus(property)]

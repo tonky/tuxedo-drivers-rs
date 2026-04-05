@@ -6,7 +6,6 @@ use tracing::debug;
 const NB04_WMI_AB_GUID: &str = "80C9BAA6-AC48-4538-9234-9F81A55E7C85";
 const UNIWILL_WMI_MGMT_GUID_BA: &str = "ABBC0F6D-8EA1-11D1-00A0-C90629100000";
 const UNIWILL_WMI_MGMT_GUID_BB: &str = "ABBC0F6E-8EA1-11D1-00A0-C90629100000";
-const CLEVO_WMI_METHOD_GUID: &str = "ABBC0F6D-8EA1-11D1-00A0-C90629100000";
 const CLEVO_ACPI_HID: &str = "CLV0001";
 
 /// Hardware platform type, determines which control path to use.
@@ -37,27 +36,6 @@ impl Platform {
     }
 }
 
-/// Keyboard backlight type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyboardType {
-    /// ITE 8291 per-key RGB via USB HID (hidraw).
-    ItePerKey,
-    /// ITE 8291 zone-based RGB via USB HID (hidraw).
-    IteZones,
-    /// ITE 8291 lightbar variant via USB HID (hidraw).
-    IteLightbar,
-    /// ITE 8297 via USB HID (hidraw).
-    Ite8297,
-    /// ITE 829x via USB HID (hidraw).
-    Ite829x,
-    /// WMI-based keyboard backlight (Uniwill/Clevo/NB04).
-    Wmi,
-    /// EC-based keyboard backlight (NB05).
-    Ec,
-    /// No controllable backlight.
-    None,
-}
-
 /// NB05-specific device configuration.
 #[derive(Debug, Clone)]
 pub struct Nb05Data {
@@ -73,7 +51,6 @@ pub struct TuxedoDevice {
     pub name: &'static str,
     pub platform: Platform,
     pub product_sku: String,
-    pub keyboard_type: KeyboardType,
     pub nb05_data: Option<Nb05Data>,
 }
 
@@ -124,7 +101,6 @@ pub fn detect_device() -> Option<TuxedoDevice> {
             name: "TUXEDO NB04 Device",
             platform: Platform::Nb04,
             product_sku: product_sku.clone(),
-            keyboard_type: KeyboardType::Wmi,
             nb05_data: None,
         });
     }
@@ -135,7 +111,6 @@ pub fn detect_device() -> Option<TuxedoDevice> {
             name: "TUXEDO Tuxi",
             platform: Platform::Tuxi,
             product_sku: product_sku.clone(),
-            keyboard_type: KeyboardType::None,
             nb05_data: None,
         });
     }
@@ -148,7 +123,6 @@ pub fn detect_device() -> Option<TuxedoDevice> {
             name: "TUXEDO Clevo Device",
             platform: Platform::Clevo,
             product_sku: product_sku.clone(),
-            keyboard_type: KeyboardType::Wmi,
             nb05_data: None,
         });
     }
@@ -161,7 +135,6 @@ pub fn detect_device() -> Option<TuxedoDevice> {
             name: "TUXEDO Uniwill Device",
             platform: Platform::Uniwill,
             product_sku: product_sku.clone(),
-            keyboard_type: KeyboardType::Wmi,
             nb05_data: None,
         });
     }
@@ -174,7 +147,6 @@ pub fn detect_device() -> Option<TuxedoDevice> {
             name: "TUXEDO Clevo Device",
             platform: Platform::Clevo,
             product_sku: product_sku.clone(),
-            keyboard_type: KeyboardType::Wmi,
             nb05_data: None,
         });
     }
@@ -184,7 +156,6 @@ pub fn detect_device() -> Option<TuxedoDevice> {
         name: "TUXEDO Uniwill Device",
         platform: Platform::Uniwill,
         product_sku: product_sku.clone(),
-        keyboard_type: KeyboardType::Wmi,
         nb05_data: None,
     })
 }
@@ -195,7 +166,6 @@ fn match_nb05(product_sku: &str) -> TuxedoDevice {
             name: "TUXEDO Pulse 14 Gen3",
             platform: Platform::Nb05,
             product_sku: product_sku.to_string(),
-            keyboard_type: KeyboardType::Ec,
             nb05_data: Some(Nb05Data {
                 num_fans: 2,
                 fanctl_onereg: false,
@@ -205,7 +175,6 @@ fn match_nb05(product_sku: &str) -> TuxedoDevice {
             name: "TUXEDO Pulse 14 Gen4",
             platform: Platform::Nb05,
             product_sku: product_sku.to_string(),
-            keyboard_type: KeyboardType::Ec,
             nb05_data: Some(Nb05Data {
                 num_fans: 2,
                 fanctl_onereg: false,
@@ -215,7 +184,6 @@ fn match_nb05(product_sku: &str) -> TuxedoDevice {
             name: "TUXEDO InfinityFlex 14 Gen1",
             platform: Platform::Nb05,
             product_sku: product_sku.to_string(),
-            keyboard_type: KeyboardType::Ec,
             nb05_data: Some(Nb05Data {
                 num_fans: 1,
                 fanctl_onereg: true,
@@ -225,7 +193,6 @@ fn match_nb05(product_sku: &str) -> TuxedoDevice {
             name: "TUXEDO NB05 Device (unknown model)",
             platform: Platform::Nb05,
             product_sku: product_sku.to_string(),
-            keyboard_type: KeyboardType::Ec,
             nb05_data: Some(Nb05Data {
                 num_fans: 2,
                 fanctl_onereg: false,
@@ -266,11 +233,6 @@ fn has_clevo_acpi() -> bool {
 /// Check if the tuxedo-ec kernel module is loaded and its sysfs interface exists.
 pub fn has_ec_sysfs() -> bool {
     Path::new("/sys/devices/platform/tuxedo-ec/ec_ram").exists()
-}
-
-/// Check if the upstream uniwill-laptop driver is loaded.
-pub fn has_uniwill_laptop() -> bool {
-    Path::new("/sys/bus/wmi/drivers/uniwill-laptop/").exists()
 }
 
 #[cfg(test)]
